@@ -1,1 +1,1 @@
-# DuScidCollector
+# ScidCollector
