@@ -217,8 +217,10 @@ public class ScidCollector extends JFrame {
             if (!realtimeReady) return;
             ScidWriter w = writers.get(instrument);
             if (w != null) {
-                try { w.writeTick(tick.getTime(), tick.getBid(), tick.getAsk()); } 
-                catch (Exception ignored) {}
+                try { 
+                    // Передаем точные объемы Bid и Ask из API Dukascopy
+                    w.writeTick(tick.getTime(), tick.getBid(), tick.getAsk(), tick.getBidVolume(), tick.getAskVolume()); 
+                } catch (Exception ignored) {}
             }
         }
 
@@ -226,7 +228,7 @@ public class ScidCollector extends JFrame {
             long step = 86400000L;
             from = from - (from % 60000);
             to = to - (to % 60000);
-            long sessionStartMs = writer.getLastTimeMs(); // Фиксируем время старта
+            long sessionStartMs = writer.getLastTimeMs(); 
 
             for (long cStart = from; cStart < to; cStart += step) {
                 long cEnd = Math.min(cStart + step, to);
@@ -235,6 +237,7 @@ public class ScidCollector extends JFrame {
                 if (bars != null) {
                     for (IBar b : bars) {
                         if (b.getTime() > sessionStartMs) {
+                            // Передаем объем свечи (он тоже в миллионах)
                             writer.writeBar(b.getTime(), b.getOpen(), b.getHigh(), b.getLow(), b.getClose(), b.getVolume());
                         }
                     }
@@ -244,16 +247,16 @@ public class ScidCollector extends JFrame {
 
         private void loadTicks(IHistory hist, Instrument inst, ScidWriter writer, long from, long to) throws Exception {
             long step = 4 * 3600 * 1000L;
-            long sessionStartMs = writer.getLastTimeMs(); // ВАЖНО: Фиксируем время старта до цикла
+            long sessionStartMs = writer.getLastTimeMs(); 
 
             for (long cStart = from; cStart < to; cStart += step) {
                 long cEnd = Math.min(cStart + step, to);
                 List<ITick> ticks = hist.getTicks(inst, cStart, cEnd);
                 if (ticks != null) {
                     for (ITick t : ticks) {
-                        // Сравниваем со статичным временем, чтобы не удалять тики в одной миллисекунде
                         if (t.getTime() > sessionStartMs) {
-                            writer.writeTick(t.getTime(), t.getBid(), t.getAsk());
+                            // Передаем точные объемы Bid и Ask из исторического тика
+                            writer.writeTick(t.getTime(), t.getBid(), t.getAsk(), t.getBidVolume(), t.getAskVolume());
                         }
                     }
                 }
@@ -309,7 +312,7 @@ public class ScidCollector extends JFrame {
             }
         }
 
-        public synchronized void writeBar(long timeMs, double open, double high, double low, double close, double volume) throws Exception {
+        public synchronized void writeBar(long timeMs, double open, double high, double low, double close, double dukasVolume) throws Exception {
             double excelDate = (timeMs + 2209161600000.0) / 86400000.0;
             if (excelDate <= this.lastExcelDate) {
                 excelDate = this.lastExcelDate + (1.0 / 86400000.0);
@@ -317,31 +320,48 @@ public class ScidCollector extends JFrame {
             this.lastExcelDate = excelDate;
             this.lastTimeMs = timeMs;
 
+            // Переводим объем бара в единицы (умножаем на 1 миллион)
+            int vol = (int)(dukasVolume * 1000000.0);
+            if (vol <= 0) vol = 1;
+
             ByteBuffer buf = ByteBuffer.allocate(40).order(ByteOrder.LITTLE_ENDIAN);
-            buf.putDouble(excelDate).putFloat((float)open).putFloat((float)high).putFloat((float)low).putFloat((float)close).putInt((int)volume).putInt(0).putInt(0).putInt(0);
+            buf.putDouble(excelDate).putFloat((float)open).putFloat((float)high).putFloat((float)low).putFloat((float)close).putInt(vol).putInt(0).putInt(0).putInt(0);
             buf.flip();
             channel.write(buf);
         }
 
-        public synchronized void writeTick(long timeMs, double bid, double ask) throws Exception {
+        public synchronized void writeTick(long timeMs, double bid, double ask, double dukasBidVol, double dukasAskVol) throws Exception {
             if (bid <= 0 || ask <= 0) return;
             double mid = (bid + ask) * 0.5;
             double closePrice = mid >= lastMid ? ask : bid;
-            int askVol = mid >= lastMid ? 1 : 0;
-            int bidVol = mid < lastMid ? 1 : 0;
+            
+            // Переводим ликвидность из миллионов в штуки
+            int rawBidVol = (int)(dukasBidVol * 1000000.0);
+            int rawAskVol = (int)(dukasAskVol * 1000000.0);
+
+            // Правило тика (Tick Rule) для кластеров (Footprint)
+            // Пишем объем той стороны, в которую двинулась цена
+            int askVol = 0;
+            int bidVol = 0;
+            if (mid >= lastMid) {
+                askVol = rawAskVol > 0 ? rawAskVol : 1; 
+            } else {
+                bidVol = rawBidVol > 0 ? rawBidVol : 1;
+            }
             lastMid = mid;
+
+            int totalVol = askVol + bidVol;
 
             double excelDate = (timeMs + 2209161600000.0) / 86400000.0;
             
-            // Защита от слияния тиков в одну точку на графике
             if (excelDate <= this.lastExcelDate) {
-                excelDate = this.lastExcelDate + (1.0 / 86400000000.0); // +1 микросекунда
+                excelDate = this.lastExcelDate + (1.0 / 86400000000.0); 
             }
             this.lastExcelDate = excelDate;
             this.lastTimeMs = timeMs;
 
             ByteBuffer buf = ByteBuffer.allocate(40).order(ByteOrder.LITTLE_ENDIAN);
-            buf.putDouble(excelDate).putFloat(0.0f).putFloat((float)ask).putFloat((float)bid).putFloat((float)closePrice).putInt(1).putInt(1).putInt(bidVol).putInt(askVol);
+            buf.putDouble(excelDate).putFloat(0.0f).putFloat((float)ask).putFloat((float)bid).putFloat((float)closePrice).putInt(1).putInt(totalVol).putInt(bidVol).putInt(askVol);
             buf.flip();
             channel.write(buf);
         }
