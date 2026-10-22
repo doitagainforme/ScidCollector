@@ -128,7 +128,9 @@ public class ScidCollector extends JFrame {
             });
 
             log("Подключение к демо-серверам...");
-            client.connect("https://platform.dukascopy.com/demo_client/demo.jnlp", userField.getText(), passField.getText());
+            // Маскируемся под обычный браузер Chrome, чтобы пройти защиту Cloudflare
+            System.setProperty("http.agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36");
+            client.connect("http://platform.dukascopy.com/demo_3/jforex_3.jnlp", userField.getText(), passField.getText());
 
             int attempts = 30;
             while (!client.isConnected() && attempts > 0) {
