@@ -18,7 +18,7 @@
         <dependency>
             <groupId>com.dukascopy.dds2</groupId>
             <artifactId>client-jforex-core</artifactId>
-            <version>LATEST</version>
+            <version>3.6.35</version>
         </dependency>
         <dependency>
             <groupId>org.slf4j</groupId>
