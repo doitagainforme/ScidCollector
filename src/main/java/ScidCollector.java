@@ -1,0 +1,319 @@
+import com.dukascopy.api.*;
+import com.dukascopy.api.system.ClientFactory;
+import com.dukascopy.api.system.IClient;
+import com.dukascopy.api.system.ISystemListener;
+import javax.swing.*;
+import java.awt.*;
+import java.io.*;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.nio.channels.FileChannel;
+import java.util.*;
+import java.util.List;
+
+public class ScidCollector extends JFrame {
+
+    private JTextField userField, passField, symbolsField, m1DaysField, tickDaysField, saveDirField;
+    private JTextArea logArea;
+    private JButton startButton;
+    private Properties props = new Properties();
+    private final String CONFIG_FILE = "collector.properties";
+    private IClient client;
+    private boolean isRunning = false;
+
+    public static void main(String[] args) {
+        SwingUtilities.invokeLater(() -> new ScidCollector().setVisible(true));
+    }
+
+    public ScidCollector() {
+        setTitle("Dukascopy SCID Collector (Sierra Chart)");
+        setSize(600, 500);
+        setDefaultCloseOperation(EXIT_ON_CLOSE);
+        setLocationRelativeTo(null);
+        setLayout(new BorderLayout());
+
+        loadConfig();
+
+        JPanel panel = new JPanel(new GridLayout(6, 2, 5, 5));
+        panel.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
+
+        panel.add(new JLabel("Логин (DEMO):"));
+        userField = new JTextField(props.getProperty("username", ""));
+        panel.add(userField);
+
+        panel.add(new JLabel("Пароль:"));
+        passField = new JTextField(props.getProperty("password", ""));
+        panel.add(passField);
+
+        panel.add(new JLabel("Инструменты (через запятую):"));
+        symbolsField = new JTextField(props.getProperty("symbols", "USATECHIDXUSD, EURUSD"));
+        panel.add(symbolsField);
+
+        panel.add(new JLabel("Глубина истории минут (дней):"));
+        m1DaysField = new JTextField(props.getProperty("m1days", "9999"));
+        panel.add(m1DaysField);
+
+        panel.add(new JLabel("Глубина истории тиков (дней):"));
+        tickDaysField = new JTextField(props.getProperty("tickdays", "55"));
+        panel.add(tickDaysField);
+
+        panel.add(new JLabel("Папка сохранения:"));
+        saveDirField = new JTextField(props.getProperty("savedir", "C:\\SierraChartIQFEED\\Data"));
+        panel.add(saveDirField);
+
+        add(panel, BorderLayout.NORTH);
+
+        logArea = new JTextArea();
+        logArea.setEditable(false);
+        add(new JScrollPane(logArea), BorderLayout.CENTER);
+
+        startButton = new JButton("СТАРТ");
+        startButton.setFont(new Font("Arial", Font.BOLD, 16));
+        startButton.setBackground(new Color(46, 204, 113));
+        startButton.addActionListener(e -> toggleStart());
+        add(startButton, BorderLayout.SOUTH);
+    }
+
+    private void log(String msg) {
+        SwingUtilities.invokeLater(() -> {
+            logArea.append(msg + "\n");
+            logArea.setCaretPosition(logArea.getDocument().getLength());
+        });
+    }
+
+    private void saveConfig() {
+        try {
+            props.setProperty("username", userField.getText().trim());
+            props.setProperty("password", passField.getText().trim());
+            props.setProperty("symbols", symbolsField.getText().trim());
+            props.setProperty("m1days", m1DaysField.getText().trim());
+            props.setProperty("tickdays", tickDaysField.getText().trim());
+            props.setProperty("savedir", saveDirField.getText().trim());
+            props.store(new FileOutputStream(CONFIG_FILE), "Dukascopy Config");
+        } catch (Exception ignored) {}
+    }
+
+    private void loadConfig() {
+        try {
+            File f = new File(CONFIG_FILE);
+            if (f.exists()) props.load(new FileInputStream(f));
+        } catch (Exception ignored) {}
+    }
+
+    private void toggleStart() {
+        if (!isRunning) {
+            saveConfig();
+            startButton.setText("РАБОТАЕТ (Закройте окно для остановки)");
+            startButton.setEnabled(false);
+            userField.setEnabled(false);
+            passField.setEnabled(false);
+            isRunning = true;
+            new Thread(this::startDukascopy).start();
+        }
+    }
+
+    private void startDukascopy() {
+        try {
+            client = ClientFactory.getDefaultInstance();
+            client.setSystemListener(new ISystemListener() {
+                @Override public void onStart(long pId) { log(">>> Процесс сбора запущен."); }
+                @Override public void onStop(long pId) { log(">>> Процесс остановлен."); }
+                @Override public void onConnect() { log(">>> УСПЕШНОЕ ПОДКЛЮЧЕНИЕ к серверам Dukascopy."); }
+                @Override public void status(int status) {}
+                
+                @Override public void onDisconnect() {
+                    log("!!! ОБРЫВ СВЯЗИ. Автоматическое переподключение через 10 секунд...");
+                    try { Thread.sleep(10000); } catch (Exception ignored) {}
+                    if (isRunning) startDukascopy(); // Авторестарт
+                }
+            });
+
+            log("Подключение к демо-серверам...");
+            client.connect("https://platform.dukascopy.com/demo_client/demo.jnlp", userField.getText(), passField.getText());
+
+            int attempts = 30;
+            while (!client.isConnected() && attempts > 0) {
+                Thread.sleep(1000);
+                attempts--;
+            }
+
+            if (!client.isConnected()) {
+                log("ОШИБКА: Не удалось авторизоваться. Проверьте логин/пароль.");
+                isRunning = false;
+                SwingUtilities.invokeLater(() -> {
+                    startButton.setText("СТАРТ");
+                    startButton.setEnabled(true);
+                });
+                return;
+            }
+
+            client.startStrategy(new ScidStrategy());
+
+        } catch (Exception e) {
+            log("Критическая ошибка: " + e.getMessage());
+        }
+    }
+
+    // =========================================================================================
+    // СТРАТЕГИЯ СБОРА И ДОКАЧКИ
+    // =========================================================================================
+    class ScidStrategy implements IStrategy {
+        private final Map<Instrument, ScidWriter> writers = new HashMap<>();
+        private boolean realtimeReady = false;
+
+        @Override
+        public void onStart(IContext context) throws JFException {
+            String[] symbolNames = symbolsField.getText().split(",");
+            Set<Instrument> instruments = new HashSet<>();
+            Map<Instrument, String> fileMap = new HashMap<>();
+
+            for (String s : symbolNames) {
+                s = s.trim().toUpperCase();
+                try {
+                    Instrument inst = Instrument.valueOf(s);
+                    instruments.add(inst);
+                    // Для USATECHIDXUSD пишем в файл NAS100.scid
+                    String fileName = s.equals("USATECHIDXUSD") ? "NAS100.scid" : (s.replace("/", "") + ".scid");
+                    fileMap.put(inst, fileName);
+                } catch (Exception e) {
+                    log("Инструмент не найден: " + s);
+                }
+            }
+            context.setSubscribedInstruments(instruments);
+
+            int m1Days = Integer.parseInt(m1DaysField.getText().trim());
+            int tDays = Integer.parseInt(tickDaysField.getText().trim());
+            long now = System.currentTimeMillis();
+
+            for (Instrument inst : instruments) {
+                String fileName = fileMap.get(inst);
+                String fullPath = saveDirField.getText().trim() + File.separator + fileName;
+                log("Инициализация файла: " + fullPath);
+
+                try {
+                    ScidWriter writer = new ScidWriter(fullPath);
+                    writers.put(inst, writer);
+                    long lastTime = writer.getLastTimeMs();
+
+                    if (lastTime == 0) {
+                        log("[" + inst + "] Скачивание минутного архива...");
+                        loadBars(context.getHistory(), inst, writer, now - (m1Days * 86400000L), now - (tDays * 86400000L));
+                        log("[" + inst + "] Скачивание тикового архива...");
+                        loadTicks(context.getHistory(), inst, writer, now - (tDays * 86400000L), now);
+                    } else if (lastTime < now - 5000) {
+                        log("[" + inst + "] Докачка пропущенных тиков (Backfill)...");
+                        loadTicks(context.getHistory(), inst, writer, lastTime, now);
+                    }
+                } catch (Exception e) {
+                    log("Ошибка с " + inst + ": " + e.getMessage());
+                }
+            }
+            realtimeReady = true;
+            log(">>> ЗАГРУЗКА ЗАВЕРШЕНА. ЗАПУЩЕН СБОР В РЕАЛЬНОМ ВРЕМЕНИ (Live).");
+        }
+
+        @Override
+        public void onTick(Instrument instrument, ITick tick) throws JFException {
+            if (!realtimeReady) return;
+            ScidWriter w = writers.get(instrument);
+            if (w != null) {
+                try { w.writeTick(tick.getTime(), tick.getBid(), tick.getAsk()); } 
+                catch (Exception ignored) {}
+            }
+        }
+
+        private void loadBars(IHistory hist, Instrument inst, ScidWriter writer, long from, long to) throws Exception {
+            long step = 86400000L;
+            for (long cStart = from; cStart < to; cStart += step) {
+                List<IBar> bars = hist.getBars(inst, Period.ONE_MIN, OfferSide.BID, cStart, Math.min(cStart + step, to));
+                for (IBar b : bars) writer.writeBar(b.getTime(), b.getOpen(), b.getHigh(), b.getLow(), b.getClose(), b.getVolume());
+            }
+        }
+
+        private void loadTicks(IHistory hist, Instrument inst, ScidWriter writer, long from, long to) throws Exception {
+            long step = 4 * 3600 * 1000L;
+            for (long cStart = from; cStart < to; cStart += step) {
+                List<ITick> ticks = hist.getTicks(inst, cStart, Math.min(cStart + step, to));
+                for (ITick t : ticks) {
+                    if (t.getTime() > writer.getLastTimeMs()) writer.writeTick(t.getTime(), t.getBid(), t.getAsk());
+                }
+            }
+        }
+
+        @Override public void onStop() throws JFException { writers.values().forEach(ScidWriter::close); }
+        @Override public void onBar(Instrument i, Period p, IBar a, IBar b) {}
+        @Override public void onMessage(IMessage message) {}
+        @Override public void onAccount(IAccount account) {}
+    }
+
+    // =========================================================================================
+    // БИНАРНАЯ ЗАПИСЬ .SCID 
+    // =========================================================================================
+    class ScidWriter {
+        private final FileChannel channel;
+        private final RandomAccessFile raf;
+        private long lastTimeMs = 0;
+        private double lastMid = 0;
+
+        public ScidWriter(String filePath) throws Exception {
+            File file = new File(filePath);
+            if (file.getParentFile() != null) file.getParentFile().mkdirs();
+            boolean exists = file.exists() && file.length() >= 56;
+            this.raf = new RandomAccessFile(file, "rw");
+            this.channel = raf.getChannel();
+
+            if (!exists) {
+                ByteBuffer header = ByteBuffer.allocate(56).order(ByteOrder.LITTLE_ENDIAN);
+                header.put("SCID".getBytes()).put((byte)'8').put((byte)0).put((byte)0).put((byte)0);
+                header.putInt(40).putInt(1);
+                while (header.hasRemaining()) header.put((byte)0);
+                header.flip();
+                channel.write(header);
+            } else {
+                long size = channel.size();
+                long remainder = (size - 56) % 40;
+                if (remainder != 0) {
+                    channel.truncate(size - remainder);
+                    size -= remainder;
+                }
+                if (size >= 96) {
+                    ByteBuffer buf = ByteBuffer.allocate(40).order(ByteOrder.LITTLE_ENDIAN);
+                    channel.position(size - 40);
+                    channel.read(buf);
+                    buf.flip();
+                    double lastExcelDate = buf.getDouble();
+                    this.lastTimeMs = Math.round((lastExcelDate * 86400000.0) - 2209161600000.0);
+                    channel.position(size);
+                }
+            }
+        }
+
+        public synchronized void writeBar(long timeMs, double open, double high, double low, double close, double volume) throws Exception {
+            double excelDate = (timeMs + 2209161600000.0) / 86400000.0;
+            ByteBuffer buf = ByteBuffer.allocate(40).order(ByteOrder.LITTLE_ENDIAN);
+            buf.putDouble(excelDate).putFloat((float)open).putFloat((float)high).putFloat((float)low).putFloat((float)close).putInt((int)volume).putInt(0).putInt(0).putInt(0);
+            buf.flip();
+            channel.write(buf);
+            this.lastTimeMs = timeMs;
+        }
+
+        public synchronized void writeTick(long timeMs, double bid, double ask) throws Exception {
+            if (bid <= 0 || ask <= 0) return;
+            double mid = (bid + ask) * 0.5;
+            double closePrice = mid >= lastMid ? ask : bid;
+            int askVol = mid >= lastMid ? 1 : 0;
+            int bidVol = mid < lastMid ? 1 : 0;
+            lastMid = mid;
+
+            double excelDate = (timeMs + 2209161600000.0) / 86400000.0;
+            ByteBuffer buf = ByteBuffer.allocate(40).order(ByteOrder.LITTLE_ENDIAN);
+            buf.putDouble(excelDate).putFloat(0.0f).putFloat((float)ask).putFloat((float)bid).putFloat((float)closePrice).putInt(1).putInt(1).putInt(bidVol).putInt(askVol);
+            buf.flip();
+            channel.write(buf);
+            this.lastTimeMs = timeMs;
+        }
+
+        public long getLastTimeMs() { return lastTimeMs; }
+        public void close() { try { channel.close(); raf.close(); } catch (Exception ignored) {} }
+    }
+}
