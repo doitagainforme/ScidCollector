@@ -182,8 +182,6 @@ public class ScidCollector extends JFrame {
 
             int m1Days = Integer.parseInt(m1DaysField.getText().trim());
             int tDays = Integer.parseInt(tickDaysField.getText().trim());
-            
-            // ВАЖНОЕ ИСПРАВЛЕНИЕ: Жесткое округление времени до ровной минуты
             long now = System.currentTimeMillis();
             now = now - (now % 60000);
 
@@ -226,28 +224,37 @@ public class ScidCollector extends JFrame {
 
         private void loadBars(IHistory hist, Instrument inst, ScidWriter writer, long from, long to) throws Exception {
             long step = 86400000L;
-            // Дополнительное выравнивание границ запроса для сервера
             from = from - (from % 60000);
             to = to - (to % 60000);
-            
+            long sessionStartMs = writer.getLastTimeMs(); // Фиксируем время старта
+
             for (long cStart = from; cStart < to; cStart += step) {
                 long cEnd = Math.min(cStart + step, to);
                 cEnd = cEnd - (cEnd % 60000);
                 List<IBar> bars = hist.getBars(inst, Period.ONE_MIN, OfferSide.BID, cStart, cEnd);
                 if (bars != null) {
-                    for (IBar b : bars) writer.writeBar(b.getTime(), b.getOpen(), b.getHigh(), b.getLow(), b.getClose(), b.getVolume());
+                    for (IBar b : bars) {
+                        if (b.getTime() > sessionStartMs) {
+                            writer.writeBar(b.getTime(), b.getOpen(), b.getHigh(), b.getLow(), b.getClose(), b.getVolume());
+                        }
+                    }
                 }
             }
         }
 
         private void loadTicks(IHistory hist, Instrument inst, ScidWriter writer, long from, long to) throws Exception {
             long step = 4 * 3600 * 1000L;
+            long sessionStartMs = writer.getLastTimeMs(); // ВАЖНО: Фиксируем время старта до цикла
+
             for (long cStart = from; cStart < to; cStart += step) {
                 long cEnd = Math.min(cStart + step, to);
                 List<ITick> ticks = hist.getTicks(inst, cStart, cEnd);
                 if (ticks != null) {
                     for (ITick t : ticks) {
-                        if (t.getTime() > writer.getLastTimeMs()) writer.writeTick(t.getTime(), t.getBid(), t.getAsk());
+                        // Сравниваем со статичным временем, чтобы не удалять тики в одной миллисекунде
+                        if (t.getTime() > sessionStartMs) {
+                            writer.writeTick(t.getTime(), t.getBid(), t.getAsk());
+                        }
                     }
                 }
             }
@@ -266,6 +273,7 @@ public class ScidCollector extends JFrame {
         private final FileChannel channel;
         private final RandomAccessFile raf;
         private long lastTimeMs = 0;
+        private double lastExcelDate = 0.0;
         private double lastMid = 0;
 
         public ScidWriter(String filePath) throws Exception {
@@ -294,8 +302,8 @@ public class ScidCollector extends JFrame {
                     channel.position(size - 40);
                     channel.read(buf);
                     buf.flip();
-                    double lastExcelDate = buf.getDouble();
-                    this.lastTimeMs = Math.round((lastExcelDate * 86400000.0) - 2209161600000.0);
+                    this.lastExcelDate = buf.getDouble();
+                    this.lastTimeMs = Math.round((this.lastExcelDate * 86400000.0) - 2209161600000.0);
                     channel.position(size);
                 }
             }
@@ -303,11 +311,16 @@ public class ScidCollector extends JFrame {
 
         public synchronized void writeBar(long timeMs, double open, double high, double low, double close, double volume) throws Exception {
             double excelDate = (timeMs + 2209161600000.0) / 86400000.0;
+            if (excelDate <= this.lastExcelDate) {
+                excelDate = this.lastExcelDate + (1.0 / 86400000.0);
+            }
+            this.lastExcelDate = excelDate;
+            this.lastTimeMs = timeMs;
+
             ByteBuffer buf = ByteBuffer.allocate(40).order(ByteOrder.LITTLE_ENDIAN);
             buf.putDouble(excelDate).putFloat((float)open).putFloat((float)high).putFloat((float)low).putFloat((float)close).putInt((int)volume).putInt(0).putInt(0).putInt(0);
             buf.flip();
             channel.write(buf);
-            this.lastTimeMs = timeMs;
         }
 
         public synchronized void writeTick(long timeMs, double bid, double ask) throws Exception {
@@ -319,11 +332,18 @@ public class ScidCollector extends JFrame {
             lastMid = mid;
 
             double excelDate = (timeMs + 2209161600000.0) / 86400000.0;
+            
+            // Защита от слияния тиков в одну точку на графике
+            if (excelDate <= this.lastExcelDate) {
+                excelDate = this.lastExcelDate + (1.0 / 86400000000.0); // +1 микросекунда
+            }
+            this.lastExcelDate = excelDate;
+            this.lastTimeMs = timeMs;
+
             ByteBuffer buf = ByteBuffer.allocate(40).order(ByteOrder.LITTLE_ENDIAN);
             buf.putDouble(excelDate).putFloat(0.0f).putFloat((float)ask).putFloat((float)bid).putFloat((float)closePrice).putInt(1).putInt(1).putInt(bidVol).putInt(askVol);
             buf.flip();
             channel.write(buf);
-            this.lastTimeMs = timeMs;
         }
 
         public long getLastTimeMs() { return lastTimeMs; }
