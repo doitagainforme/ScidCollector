@@ -119,7 +119,6 @@ public class ScidCollector extends JFrame {
                 @Override public void onStart(long pId) { log(">>> Процесс сбора запущен."); }
                 @Override public void onStop(long pId) { log(">>> Процесс остановлен."); }
                 @Override public void onConnect() { log(">>> УСПЕШНОЕ ПОДКЛЮЧЕНИЕ к серверам Dukascopy."); }
-                @Override public void status(int status) {}
                 
                 @Override public void onDisconnect() {
                     log("!!! ОБРЫВ СВЯЗИ. Автоматическое переподключение через 10 секунд...");
@@ -226,7 +225,9 @@ public class ScidCollector extends JFrame {
             long step = 86400000L;
             for (long cStart = from; cStart < to; cStart += step) {
                 List<IBar> bars = hist.getBars(inst, Period.ONE_MIN, OfferSide.BID, cStart, Math.min(cStart + step, to));
-                for (IBar b : bars) writer.writeBar(b.getTime(), b.getOpen(), b.getHigh(), b.getLow(), b.getClose(), b.getVolume());
+                if (bars != null) {
+                    for (IBar b : bars) writer.writeBar(b.getTime(), b.getOpen(), b.getHigh(), b.getLow(), b.getClose(), b.getVolume());
+                }
             }
         }
 
@@ -234,8 +235,10 @@ public class ScidCollector extends JFrame {
             long step = 4 * 3600 * 1000L;
             for (long cStart = from; cStart < to; cStart += step) {
                 List<ITick> ticks = hist.getTicks(inst, cStart, Math.min(cStart + step, to));
-                for (ITick t : ticks) {
-                    if (t.getTime() > writer.getLastTimeMs()) writer.writeTick(t.getTime(), t.getBid(), t.getAsk());
+                if (ticks != null) {
+                    for (ITick t : ticks) {
+                        if (t.getTime() > writer.getLastTimeMs()) writer.writeTick(t.getTime(), t.getBid(), t.getAsk());
+                    }
                 }
             }
         }
