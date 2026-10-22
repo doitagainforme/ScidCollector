@@ -10,15 +10,16 @@
     </properties>
     <repositories>
         <repository>
-            <id>dukascopy-public</id>
-            <url>https://www.dukascopy.com/client/jforexlib/publicrepo/</url>
+            <id>dc-public</id>
+            <name>dc-public</name>
+            <url>https://datafeed.dukascopy.com/m2/releases/</url>
         </repository>
     </repositories>
     <dependencies>
         <dependency>
-            <groupId>com.dukascopy.dds2</groupId>
-            <artifactId>client-jforex-core</artifactId>
-            <version>3.6.35</version>
+            <groupId>com.dukascopy.api</groupId>
+            <artifactId>jforex-sdk</artifactId>
+            <version>RELEASE</version>
         </dependency>
         <dependency>
             <groupId>org.slf4j</groupId>
