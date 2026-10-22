@@ -11,14 +11,14 @@
     <repositories>
         <repository>
             <id>dukascopy-public</id>
-            <url>https://www.dukascopy.com/client/jforex/repository/</url>
+            <url>https://www.dukascopy.com/client/jforexlib/publicrepo/</url>
         </repository>
     </repositories>
     <dependencies>
         <dependency>
             <groupId>com.dukascopy.dds2</groupId>
             <artifactId>client-jforex-core</artifactId>
-            <version>3.6.35</version>
+            <version>RELEASE</version>
         </dependency>
         <dependency>
             <groupId>org.slf4j</groupId>
