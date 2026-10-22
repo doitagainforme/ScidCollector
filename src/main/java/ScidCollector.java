@@ -58,7 +58,7 @@ public class ScidCollector extends JFrame {
         panel.add(tickDaysField);
 
         panel.add(new JLabel("Папка сохранения:"));
-        saveDirField = new JTextField(props.getProperty("savedir", "C:\\SierraChartIQFEED\\Data"));
+        saveDirField = new JTextField(props.getProperty("savedir", "C:\\SierraChart\\Data"));
         panel.add(saveDirField);
 
         add(panel, BorderLayout.NORTH);
@@ -123,12 +123,11 @@ public class ScidCollector extends JFrame {
                 @Override public void onDisconnect() {
                     log("!!! ОБРЫВ СВЯЗИ. Автоматическое переподключение через 10 секунд...");
                     try { Thread.sleep(10000); } catch (Exception ignored) {}
-                    if (isRunning) startDukascopy(); // Авторестарт
+                    if (isRunning) startDukascopy(); 
                 }
             });
 
             log("Подключение к демо-серверам...");
-            // Маскируемся под обычный браузер Chrome, чтобы пройти защиту Cloudflare
             System.setProperty("http.agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36");
             client.connect("http://platform.dukascopy.com/demo_3/jforex_3.jnlp", userField.getText(), passField.getText());
 
@@ -173,7 +172,6 @@ public class ScidCollector extends JFrame {
                 try {
                     Instrument inst = Instrument.valueOf(s);
                     instruments.add(inst);
-                    // Для USATECHIDXUSD пишем в файл NAS100.scid
                     String fileName = s.equals("USATECHIDXUSD") ? "NAS100.scid" : (s.replace("/", "") + ".scid");
                     fileMap.put(inst, fileName);
                 } catch (Exception e) {
@@ -184,7 +182,10 @@ public class ScidCollector extends JFrame {
 
             int m1Days = Integer.parseInt(m1DaysField.getText().trim());
             int tDays = Integer.parseInt(tickDaysField.getText().trim());
+            
+            // ВАЖНОЕ ИСПРАВЛЕНИЕ: Жесткое округление времени до ровной минуты
             long now = System.currentTimeMillis();
+            now = now - (now % 60000);
 
             for (Instrument inst : instruments) {
                 String fileName = fileMap.get(inst);
@@ -225,8 +226,14 @@ public class ScidCollector extends JFrame {
 
         private void loadBars(IHistory hist, Instrument inst, ScidWriter writer, long from, long to) throws Exception {
             long step = 86400000L;
+            // Дополнительное выравнивание границ запроса для сервера
+            from = from - (from % 60000);
+            to = to - (to % 60000);
+            
             for (long cStart = from; cStart < to; cStart += step) {
-                List<IBar> bars = hist.getBars(inst, Period.ONE_MIN, OfferSide.BID, cStart, Math.min(cStart + step, to));
+                long cEnd = Math.min(cStart + step, to);
+                cEnd = cEnd - (cEnd % 60000);
+                List<IBar> bars = hist.getBars(inst, Period.ONE_MIN, OfferSide.BID, cStart, cEnd);
                 if (bars != null) {
                     for (IBar b : bars) writer.writeBar(b.getTime(), b.getOpen(), b.getHigh(), b.getLow(), b.getClose(), b.getVolume());
                 }
@@ -236,7 +243,8 @@ public class ScidCollector extends JFrame {
         private void loadTicks(IHistory hist, Instrument inst, ScidWriter writer, long from, long to) throws Exception {
             long step = 4 * 3600 * 1000L;
             for (long cStart = from; cStart < to; cStart += step) {
-                List<ITick> ticks = hist.getTicks(inst, cStart, Math.min(cStart + step, to));
+                long cEnd = Math.min(cStart + step, to);
+                List<ITick> ticks = hist.getTicks(inst, cStart, cEnd);
                 if (ticks != null) {
                     for (ITick t : ticks) {
                         if (t.getTime() > writer.getLastTimeMs()) writer.writeTick(t.getTime(), t.getBid(), t.getAsk());
