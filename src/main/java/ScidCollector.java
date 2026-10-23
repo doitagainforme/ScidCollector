@@ -246,6 +246,10 @@ public class ScidCollector extends JFrame {
             int m1Days = Integer.parseInt(m1DaysField.getText().trim());
             int tDays = Integer.parseInt(tickDaysField.getText().trim());
             
+            // ВЕРНУЛИ СТАБИЛЬНЫЙ ПРОСТОЙ РАСЧЕТ ВРЕМЕНИ
+            long now = System.currentTimeMillis();
+            now = now - (now % 60000);
+
             for (Instrument inst : instruments) {
                 String fileName = fileMap.get(inst);
                 String fullPath = saveDirField.getText().trim() + File.separator + fileName;
@@ -256,26 +260,17 @@ public class ScidCollector extends JFrame {
                     writers.put(inst, writer);
                     long lastTime = writer.getLastTimeMs();
 
-                    // Берем точное время с сервера Dukascopy
-                    long serverNow = System.currentTimeMillis();
-                    try {
-                        ITick lastServerTick = context.getHistory().getLastTick(inst);
-                        if (lastServerTick != null) {
-                            serverNow = lastServerTick.getTime();
-                        }
-                    } catch (Exception ignored) {}
-
                     if (lastTime == 0) {
                         log("[" + inst + "] Скачивание минутного архива...");
-                        loadBars(context.getHistory(), inst, writer, serverNow - (m1Days * 86400000L), serverNow - (tDays * 86400000L));
+                        loadBars(context.getHistory(), inst, writer, now - (m1Days * 86400000L), now - (tDays * 86400000L));
                         log("[" + inst + "] Скачивание тикового архива...");
-                        loadTicks(context.getHistory(), inst, writer, serverNow - (tDays * 86400000L), serverNow);
-                    } else if (lastTime < serverNow - 5000) {
+                        loadTicks(context.getHistory(), inst, writer, now - (tDays * 86400000L), now);
+                    } else if (lastTime < now - 5000) {
                         log("[" + inst + "] Докачка пропущенных тиков (Backfill)...");
-                        loadTicks(context.getHistory(), inst, writer, lastTime, serverNow);
+                        loadTicks(context.getHistory(), inst, writer, lastTime, now);
                     }
                 } catch (Exception e) {
-                    log("Ошибка с " + inst + ". Загрузка прервана: " + e.getMessage());
+                    log("Ошибка с " + inst + ": " + e.getMessage());
                 }
             }
             realtimeReady = true;
@@ -328,34 +323,24 @@ public class ScidCollector extends JFrame {
                 cEnd = cEnd - (cEnd % 60000);
                 
                 log("[" + inst + "] M1: загрузка " + sdf.format(new Date(cStart)) + " ...");
-                
-                boolean success = false;
-                int retries = 10;
-                while (!success) {
-                    try {
-                        List<IBar> bars = hist.getBars(inst, Period.ONE_MIN, OfferSide.BID, cStart, cEnd);
-                        if (bars != null) {
-                            for (IBar b : bars) {
-                                if (b.getVolume() > 0 && b.getTime() > sessionStartMs) {
-                                    writer.writeBar(b.getTime(), b.getOpen(), b.getHigh(), b.getLow(), b.getClose(), b.getVolume());
-                                }
+                try {
+                    List<IBar> bars = hist.getBars(inst, Period.ONE_MIN, OfferSide.BID, cStart, cEnd);
+                    if (bars != null) {
+                        for (IBar b : bars) {
+                            if (b.getVolume() > 0 && b.getTime() > sessionStartMs) {
+                                writer.writeBar(b.getTime(), b.getOpen(), b.getHigh(), b.getLow(), b.getClose(), b.getVolume());
                             }
                         }
-                        success = true;
-                        Thread.sleep(50); 
-                    } catch (Exception e) {
-                        retries--;
-                        if (retries <= 0) throw new Exception("Сервер не отдает бары M1: " + e.getMessage());
-                        log("[" + inst + "] Сбой M1. Повтор... (осталось попыток: " + retries + ")");
-                        Thread.sleep(3000);
                     }
+                } catch (Exception e) {
+                    log("[" + inst + "] Пропуск блока M1 (ошибка: " + e.getMessage() + ")");
                 }
             }
         }
 
+        // ВЕРНУЛИ ОРИГИНАЛЬНЫЙ СТАБИЛЬНЫЙ МЕТОД ЗАГРУЗКИ ТИКОВ
         private void loadTicks(IHistory hist, Instrument inst, ScidWriter writer, long from, long to) throws Exception {
-            // ШАГ УМЕНЬШЕН ДО 1 ЧАСА. Это ключевое исправление для стабильности Dukascopy.
-            long step = 3600 * 1000L; 
+            long step = 4 * 3600 * 1000L; // Тот самый шаг в 4 часа, с которым всё работало
             long sessionStartMs = writer.getLastTimeMs(); 
             SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm");
 
@@ -363,29 +348,18 @@ public class ScidCollector extends JFrame {
                 long cEnd = Math.min(cStart + step, to);
                 log("[" + inst + "] ТИКИ: загрузка " + sdf.format(new Date(cStart)) + " ...");
                 
-                boolean success = false;
-                int retries = 10; // 10 попыток на блок, без пропусков!
-                while (!success) {
-                    try {
-                        List<ITick> ticks = hist.getTicks(inst, cStart, cEnd);
-                        if (ticks != null) {
-                            for (ITick t : ticks) {
-                                if (t.getTime() > sessionStartMs) {
-                                    writer.writeTick(t.getTime(), t.getBid(), t.getAsk(), t.getBidVolume(), t.getAskVolume());
-                                }
+                try {
+                    List<ITick> ticks = hist.getTicks(inst, cStart, cEnd);
+                    if (ticks != null) {
+                        for (ITick t : ticks) {
+                            if (t.getTime() > sessionStartMs) {
+                                writer.writeTick(t.getTime(), t.getBid(), t.getAsk(), t.getBidVolume(), t.getAskVolume());
                             }
                         }
-                        success = true;
-                        Thread.sleep(50); // Пауза от бана
-                    } catch (Exception e) {
-                        retries--;
-                        if (retries <= 0) {
-                            // Если скачать не удалось, жестко обрываем загрузку, чтобы не создавать дыру!
-                            throw new Exception("Не удалось скачать блок тиков после 10 попыток.");
-                        }
-                        log("[" + inst + "] Сбой сети. Повтор блока... (осталось попыток: " + retries + ")");
-                        Thread.sleep(3000); // Отдыхаем 3 секунды и пробуем снова этот же кусок
                     }
+                } catch (Exception e) {
+                    // Если блок пустой (рынок закрыт) или мелкий сбой - просто игнорируем и спокойно качаем дальше
+                    log("[" + inst + "] Пропуск блока (данные отсутствуют или ошибка API)");
                 }
             }
         }
