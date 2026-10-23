@@ -246,10 +246,6 @@ public class ScidCollector extends JFrame {
             int m1Days = Integer.parseInt(m1DaysField.getText().trim());
             int tDays = Integer.parseInt(tickDaysField.getText().trim());
             
-            // ВЕРНУЛИ СТАБИЛЬНЫЙ ПРОСТОЙ РАСЧЕТ ВРЕМЕНИ
-            long now = System.currentTimeMillis();
-            now = now - (now % 60000);
-
             for (Instrument inst : instruments) {
                 String fileName = fileMap.get(inst);
                 String fullPath = saveDirField.getText().trim() + File.separator + fileName;
@@ -260,14 +256,22 @@ public class ScidCollector extends JFrame {
                     writers.put(inst, writer);
                     long lastTime = writer.getLastTimeMs();
 
+                    long serverNow = System.currentTimeMillis();
+                    try {
+                        ITick lastServerTick = context.getHistory().getLastTick(inst);
+                        if (lastServerTick != null) {
+                            serverNow = lastServerTick.getTime();
+                        }
+                    } catch (Exception ignored) {}
+
                     if (lastTime == 0) {
                         log("[" + inst + "] Скачивание минутного архива...");
-                        loadBars(context.getHistory(), inst, writer, now - (m1Days * 86400000L), now - (tDays * 86400000L));
+                        loadBars(context.getHistory(), inst, writer, serverNow - (m1Days * 86400000L), serverNow - (tDays * 86400000L));
                         log("[" + inst + "] Скачивание тикового архива...");
-                        loadTicks(context.getHistory(), inst, writer, now - (tDays * 86400000L), now);
-                    } else if (lastTime < now - 5000) {
+                        loadTicks(context.getHistory(), inst, writer, serverNow - (tDays * 86400000L), serverNow);
+                    } else if (lastTime < serverNow - 5000) {
                         log("[" + inst + "] Докачка пропущенных тиков (Backfill)...");
-                        loadTicks(context.getHistory(), inst, writer, lastTime, now);
+                        loadTicks(context.getHistory(), inst, writer, lastTime, serverNow);
                     }
                 } catch (Exception e) {
                     log("Ошибка с " + inst + ": " + e.getMessage());
@@ -312,16 +316,12 @@ public class ScidCollector extends JFrame {
                     } catch (Exception ignored) {}
                     from += step;
                 }
-                if (!found) {
-                    log("[" + inst + "] Нет данных M1 за этот период.");
-                    return;
-                }
+                if (!found) return;
             }
 
             for (long cStart = from; cStart < to; cStart += step) {
                 long cEnd = Math.min(cStart + step, to);
                 cEnd = cEnd - (cEnd % 60000);
-                
                 log("[" + inst + "] M1: загрузка " + sdf.format(new Date(cStart)) + " ...");
                 try {
                     List<IBar> bars = hist.getBars(inst, Period.ONE_MIN, OfferSide.BID, cStart, cEnd);
@@ -338,16 +338,21 @@ public class ScidCollector extends JFrame {
             }
         }
 
-        // ВЕРНУЛИ ОРИГИНАЛЬНЫЙ СТАБИЛЬНЫЙ МЕТОД ЗАГРУЗКИ ТИКОВ
+        // НОВЫЙ ИНТЕЛЛЕКТУАЛЬНЫЙ МЕТОД ДОКАЧКИ ТИКОВ БЕЗ ПРОПУСКОВ
         private void loadTicks(IHistory hist, Instrument inst, ScidWriter writer, long from, long to) throws Exception {
-            long step = 4 * 3600 * 1000L; // Тот самый шаг в 4 часа, с которым всё работало
-            long sessionStartMs = writer.getLastTimeMs(); 
-            SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm");
+            // Защита от границы Live-эфира: отступаем 2 минуты от самого последнего серверного тика
+            long safeTo = to - 120000;
+            if (from >= safeTo) return;
 
-            for (long cStart = from; cStart < to; cStart += step) {
-                long cEnd = Math.min(cStart + step, to);
-                log("[" + inst + "] ТИКИ: загрузка " + sdf.format(new Date(cStart)) + " ...");
-                
+            long step = 1800000L; // Стартуем с 30 минут (оптимально для EURUSD)
+            long sessionStartMs = writer.getLastTimeMs(); 
+            SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
+
+            long cStart = from;
+            while (cStart < safeTo) {
+                long cEnd = Math.min(cStart + step, safeTo);
+                log("[" + inst + "] ТИКИ: " + sdf.format(new Date(cStart)) + " - " + sdf.format(new Date(cEnd)));
+
                 try {
                     List<ITick> ticks = hist.getTicks(inst, cStart, cEnd);
                     if (ticks != null) {
@@ -357,9 +362,25 @@ public class ScidCollector extends JFrame {
                             }
                         }
                     }
+                    // Успех - двигаемся вперед и возвращаем нормальный размер шага
+                    cStart = cEnd;
+                    step = 1800000L; 
+                    Thread.sleep(50); 
                 } catch (Exception e) {
-                    // Если блок пустой (рынок закрыт) или мелкий сбой - просто игнорируем и спокойно качаем дальше
-                    log("[" + inst + "] Пропуск блока (данные отсутствуют или ошибка API)");
+                    String err = e.getMessage() != null ? e.getMessage() : "Timeout";
+                    log("[" + inst + "] Ошибка API: " + err);
+
+                    // Если сервер захлебнулся, режем размер запроса ровно пополам
+                    step = step / 2; 
+                    if (step >= 60000) {
+                        log("[" + inst + "] Уменьшаем блок до " + (step / 60000) + " мин. Пробуем снова...");
+                        Thread.sleep(2000);
+                    } else {
+                        // Режим отчаяния: если не отдается даже 1 минута, только тогда мы её пропускаем
+                        log("[" + inst + "] Критический отказ. Вынужденный пропуск 1 минуты.");
+                        cStart += 60000; // Пропускаем ровно 1 проблемную минуту, а не 4 часа
+                        step = 1800000L; // Возвращаем нормальный шаг
+                    }
                 }
             }
         }
