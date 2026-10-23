@@ -56,7 +56,7 @@ public class ScidCollector extends JFrame {
         panel.add(passField);
 
         panel.add(new JLabel("Инструменты (Тикер=Файл):"));
-        symbolsField = new JTextField(props.getProperty("symbols", "USATECHIDXUSD=NAS100, EURUSD=EURUSD"));
+        symbolsField = new JTextField(props.getProperty("symbols", "USATECHIDXUSD=NAS100, EURUSD=EURUSD, XAUUSD=XAUUSD"));
         addContextMenu(symbolsField);
         panel.add(symbolsField);
 
@@ -287,25 +287,39 @@ public class ScidCollector extends JFrame {
         }
 
         private void loadBars(IHistory hist, Instrument inst, ScidWriter writer, long from, long to) throws Exception {
-            // Проверка фактического начала истории инструмента на сервере
-            long earliestM1 = hist.getStartTimeOfData(inst, Period.ONE_MIN, OfferSide.BID);
-            if (from < earliestM1) {
-                from = earliestM1;
-                log("[" + inst + "] Начало базы M1 на сервере: " + new SimpleDateFormat("yyyy-MM-dd").format(new Date(earliestM1)));
-            }
-            if (from >= to) return;
-
-            long step = 30L * 86400000L; // Шаг 30 дней за один запрос (ускорение в 30 раз)
+            long step = 30L * 86400000L; // Шаг 30 дней для быстрого скачивания минут
             from = from - (from % 60000);
             to = to - (to % 60000);
             long sessionStartMs = writer.getLastTimeMs(); 
             SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd");
 
+            // Быстрый поиск начала базы, чтобы не ждать часы на пустых годах
+            if (sessionStartMs == 0) {
+                log("[" + inst + "] Поиск фактического начала минутного архива (пропуск пустых лет)...");
+                boolean found = false;
+                while (from < to) {
+                    long pEnd = Math.min(from + step, to);
+                    List<IBar> probe = hist.getBars(inst, Period.ONE_MIN, OfferSide.BID, from, pEnd);
+                    if (probe != null && !probe.isEmpty()) {
+                        from = probe.get(0).getTime();
+                        from = from - (from % 60000);
+                        found = true;
+                        log("[" + inst + "] Найдена история M1 начиная с: " + sdf.format(new Date(from)));
+                        break;
+                    }
+                    from += step;
+                }
+                if (!found) {
+                    log("[" + inst + "] Нет данных M1 за этот период.");
+                    return;
+                }
+            }
+
             for (long cStart = from; cStart < to; cStart += step) {
                 long cEnd = Math.min(cStart + step, to);
                 cEnd = cEnd - (cEnd % 60000);
                 
-                log("[" + inst + "] Загрузка M1: " + sdf.format(new Date(cStart)) + " ...");
+                log("[" + inst + "] M1: загрузка " + sdf.format(new Date(cStart)) + " ...");
                 List<IBar> bars = hist.getBars(inst, Period.ONE_MIN, OfferSide.BID, cStart, cEnd);
                 if (bars != null) {
                     for (IBar b : bars) {
@@ -318,22 +332,36 @@ public class ScidCollector extends JFrame {
         }
 
         private void loadTicks(IHistory hist, Instrument inst, ScidWriter writer, long from, long to) throws Exception {
-            // Проверка фактического начала истории тиков на сервере
-            long earliestTick = hist.getStartTimeOfData(inst, Period.TICK, OfferSide.BID);
-            if (from < earliestTick) {
-                from = earliestTick;
-                log("[" + inst + "] Начало тиковой базы на сервере: " + new SimpleDateFormat("yyyy-MM-dd").format(new Date(earliestTick)));
-            }
-            if (from >= to) return;
-
-            long step = 86400000L; // Шаг 1 день за один запрос (ускорение в 6 раз)
+            long step = 43200000L; // Шаг 12 часов для безопасного скачивания тяжелых тиков
             long sessionStartMs = writer.getLastTimeMs(); 
             SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd");
+
+            if (sessionStartMs == 0) {
+                log("[" + inst + "] Поиск фактического начала тикового архива...");
+                boolean found = false;
+                long probeStep = 30L * 86400000L; 
+                long probeFrom = from - (from % 60000);
+                while (probeFrom < to) {
+                    long pEnd = Math.min(probeFrom + probeStep, to);
+                    List<IBar> probe = hist.getBars(inst, Period.ONE_MIN, OfferSide.BID, probeFrom, pEnd);
+                    if (probe != null && !probe.isEmpty()) {
+                        from = probe.get(0).getTime();
+                        found = true;
+                        log("[" + inst + "] Найдена история ТИКОВ начиная с: " + sdf.format(new Date(from)));
+                        break;
+                    }
+                    probeFrom += probeStep;
+                }
+                if (!found) {
+                    log("[" + inst + "] Нет тиков за этот период.");
+                    return;
+                }
+            }
 
             for (long cStart = from; cStart < to; cStart += step) {
                 long cEnd = Math.min(cStart + step, to);
                 
-                log("[" + inst + "] Загрузка ТИКОВ: " + sdf.format(new Date(cStart)) + " ...");
+                log("[" + inst + "] ТИКИ: загрузка " + sdf.format(new Date(cStart)) + " ...");
                 List<ITick> ticks = hist.getTicks(inst, cStart, cEnd);
                 if (ticks != null) {
                     for (ITick t : ticks) {
