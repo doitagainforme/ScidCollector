@@ -169,8 +169,8 @@ public class ScidCollector extends JFrame {
             System.setProperty("http.agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36");
             
             String jnlpUrl = accountTypeCombo.getSelectedItem().equals("LIVE") 
-                ? "http://platform.dukascopy.com/live_3/jforex_3.jnlp" 
-                : "http://platform.dukascopy.com/demo_3/jforex_3.jnlp";
+                ? "https://platform.dukascopy.com/live_client/live.jnlp" 
+                : "https://platform.dukascopy.com/demo_client/demo.jnlp";
 
             client.connect(jnlpUrl, userField.getText(), passField.getText());
 
@@ -245,7 +245,9 @@ public class ScidCollector extends JFrame {
 
             int m1Days = Integer.parseInt(m1DaysField.getText().trim());
             int tDays = Integer.parseInt(tickDaysField.getText().trim());
-            long now = System.currentTimeMillis();
+            
+            // Защитный буфер 15 секунд, чтобы не запрашивать данные из будущего при рассинхронизации часов
+            long now = System.currentTimeMillis() - 15000;
             now = now - (now % 60000);
 
             for (Instrument inst : instruments) {
@@ -287,13 +289,12 @@ public class ScidCollector extends JFrame {
         }
 
         private void loadBars(IHistory hist, Instrument inst, ScidWriter writer, long from, long to) throws Exception {
-            long step = 30L * 86400000L; // Шаг 30 дней для быстрого скачивания минут
+            long step = 30L * 86400000L; 
             from = from - (from % 60000);
             to = to - (to % 60000);
             long sessionStartMs = writer.getLastTimeMs(); 
             SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd");
 
-            // Быстрый поиск начала базы, чтобы не ждать часы на пустых годах
             if (sessionStartMs == 0) {
                 log("[" + inst + "] Поиск фактического начала минутного архива (пропуск пустых лет)...");
                 boolean found = false;
@@ -320,11 +321,28 @@ public class ScidCollector extends JFrame {
                 cEnd = cEnd - (cEnd % 60000);
                 
                 log("[" + inst + "] M1: загрузка " + sdf.format(new Date(cStart)) + " ...");
-                List<IBar> bars = hist.getBars(inst, Period.ONE_MIN, OfferSide.BID, cStart, cEnd);
-                if (bars != null) {
-                    for (IBar b : bars) {
-                        if (b.getTime() > sessionStartMs) {
-                            writer.writeBar(b.getTime(), b.getOpen(), b.getHigh(), b.getLow(), b.getClose(), b.getVolume());
+                
+                boolean success = false;
+                int retries = 3;
+                while (!success && retries > 0) {
+                    try {
+                        List<IBar> bars = hist.getBars(inst, Period.ONE_MIN, OfferSide.BID, cStart, cEnd);
+                        if (bars != null) {
+                            for (IBar b : bars) {
+                                if (b.getVolume() > 0 && b.getTime() > sessionStartMs) {
+                                    writer.writeBar(b.getTime(), b.getOpen(), b.getHigh(), b.getLow(), b.getClose(), b.getVolume());
+                                }
+                            }
+                        }
+                        success = true;
+                        Thread.sleep(50); 
+                    } catch (Exception e) {
+                        retries--;
+                        log("[" + inst + "] Сбой сети (M1). Осталось попыток: " + retries);
+                        Thread.sleep(2000);
+                        if (retries == 0) {
+                            log("[" + inst + "] Блок пропущен из-за ошибки. Идем дальше...");
+                            break; // Не останавливаем всю программу, просто пропускаем сломанный кусок
                         }
                     }
                 }
@@ -332,9 +350,9 @@ public class ScidCollector extends JFrame {
         }
 
         private void loadTicks(IHistory hist, Instrument inst, ScidWriter writer, long from, long to) throws Exception {
-            long step = 43200000L; // Шаг 12 часов для безопасного скачивания тяжелых тиков
+            long step = 3600 * 1000L; // Шаг уменьшен до 1 часа для безопасной загрузки тяжелых пар (EURUSD)
             long sessionStartMs = writer.getLastTimeMs(); 
-            SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd");
+            SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm");
 
             if (sessionStartMs == 0) {
                 log("[" + inst + "] Поиск фактического начала тикового архива...");
@@ -362,11 +380,28 @@ public class ScidCollector extends JFrame {
                 long cEnd = Math.min(cStart + step, to);
                 
                 log("[" + inst + "] ТИКИ: загрузка " + sdf.format(new Date(cStart)) + " ...");
-                List<ITick> ticks = hist.getTicks(inst, cStart, cEnd);
-                if (ticks != null) {
-                    for (ITick t : ticks) {
-                        if (t.getTime() > sessionStartMs) {
-                            writer.writeTick(t.getTime(), t.getBid(), t.getAsk(), t.getBidVolume(), t.getAskVolume());
+                
+                boolean success = false;
+                int retries = 3;
+                while (!success && retries > 0) {
+                    try {
+                        List<ITick> ticks = hist.getTicks(inst, cStart, cEnd);
+                        if (ticks != null) {
+                            for (ITick t : ticks) {
+                                if (t.getTime() > sessionStartMs) {
+                                    writer.writeTick(t.getTime(), t.getBid(), t.getAsk(), t.getBidVolume(), t.getAskVolume());
+                                }
+                            }
+                        }
+                        success = true;
+                        Thread.sleep(50); 
+                    } catch (Exception e) {
+                        retries--;
+                        log("[" + inst + "] Сбой сети (Тики). Осталось попыток: " + retries);
+                        Thread.sleep(2000);
+                        if (retries == 0) {
+                            log("[" + inst + "] Блок пропущен из-за ошибки. Идем дальше...");
+                            break; // Переходим к следующему блоку или режиму Live
                         }
                     }
                 }
