@@ -168,7 +168,6 @@ public class ScidCollector extends JFrame {
             log("Подключение к серверам " + accountTypeCombo.getSelectedItem() + "...");
             System.setProperty("http.agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36");
             
-            // ВЕРНУЛ РАБОЧУЮ ССЫЛКУ. БОЛЬШЕ НЕ ТРОГАЮ.
             String jnlpUrl = accountTypeCombo.getSelectedItem().equals("LIVE") 
                 ? "http://platform.dukascopy.com/live_3/jforex_3.jnlp" 
                 : "http://platform.dukascopy.com/demo_3/jforex_3.jnlp";
@@ -247,8 +246,8 @@ public class ScidCollector extends JFrame {
             int m1Days = Integer.parseInt(m1DaysField.getText().trim());
             int tDays = Integer.parseInt(tickDaysField.getText().trim());
             
-            // Защитный буфер 15 секунд, чтобы не запрашивать данные из будущего при рассинхронизации часов
-            long now = System.currentTimeMillis() - 15000;
+            // Вернули стандартный расчет времени без искусственных вычетов
+            long now = System.currentTimeMillis();
             now = now - (now % 60000);
 
             for (Instrument inst : instruments) {
@@ -322,87 +321,31 @@ public class ScidCollector extends JFrame {
                 cEnd = cEnd - (cEnd % 60000);
                 
                 log("[" + inst + "] M1: загрузка " + sdf.format(new Date(cStart)) + " ...");
-                
-                boolean success = false;
-                int retries = 3;
-                while (!success && retries > 0) {
-                    try {
-                        List<IBar> bars = hist.getBars(inst, Period.ONE_MIN, OfferSide.BID, cStart, cEnd);
-                        if (bars != null) {
-                            for (IBar b : bars) {
-                                if (b.getVolume() > 0 && b.getTime() > sessionStartMs) {
-                                    writer.writeBar(b.getTime(), b.getOpen(), b.getHigh(), b.getLow(), b.getClose(), b.getVolume());
-                                }
-                            }
-                        }
-                        success = true;
-                        Thread.sleep(50); 
-                    } catch (Exception e) {
-                        retries--;
-                        log("[" + inst + "] Сбой сети (M1). Осталось попыток: " + retries);
-                        Thread.sleep(2000);
-                        if (retries == 0) {
-                            log("[" + inst + "] Блок пропущен из-за ошибки. Идем дальше...");
-                            break; 
+                List<IBar> bars = hist.getBars(inst, Period.ONE_MIN, OfferSide.BID, cStart, cEnd);
+                if (bars != null) {
+                    for (IBar b : bars) {
+                        if (b.getVolume() > 0 && b.getTime() > sessionStartMs) {
+                            writer.writeBar(b.getTime(), b.getOpen(), b.getHigh(), b.getLow(), b.getClose(), b.getVolume());
                         }
                     }
                 }
             }
         }
 
+        // ПОЛНОСТЬЮ ОТКАТИЛИ МЕТОД ЗАГРУЗКИ ТИКОВ К ПРОВЕРЕННОЙ СТАБИЛЬНОЙ ВЕРСИИ
         private void loadTicks(IHistory hist, Instrument inst, ScidWriter writer, long from, long to) throws Exception {
-            long step = 3600 * 1000L; 
+            long step = 4 * 3600 * 1000L; // Стабильный шаг в 4 часа
             long sessionStartMs = writer.getLastTimeMs(); 
             SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm");
 
-            if (sessionStartMs == 0) {
-                log("[" + inst + "] Поиск фактического начала тикового архива...");
-                boolean found = false;
-                long probeStep = 30L * 86400000L; 
-                long probeFrom = from - (from % 60000);
-                while (probeFrom < to) {
-                    long pEnd = Math.min(probeFrom + probeStep, to);
-                    List<IBar> probe = hist.getBars(inst, Period.ONE_MIN, OfferSide.BID, probeFrom, pEnd);
-                    if (probe != null && !probe.isEmpty()) {
-                        from = probe.get(0).getTime();
-                        found = true;
-                        log("[" + inst + "] Найдена история ТИКОВ начиная с: " + sdf.format(new Date(from)));
-                        break;
-                    }
-                    probeFrom += probeStep;
-                }
-                if (!found) {
-                    log("[" + inst + "] Нет тиков за этот период.");
-                    return;
-                }
-            }
-
             for (long cStart = from; cStart < to; cStart += step) {
                 long cEnd = Math.min(cStart + step, to);
-                
                 log("[" + inst + "] ТИКИ: загрузка " + sdf.format(new Date(cStart)) + " ...");
-                
-                boolean success = false;
-                int retries = 3;
-                while (!success && retries > 0) {
-                    try {
-                        List<ITick> ticks = hist.getTicks(inst, cStart, cEnd);
-                        if (ticks != null) {
-                            for (ITick t : ticks) {
-                                if (t.getTime() > sessionStartMs) {
-                                    writer.writeTick(t.getTime(), t.getBid(), t.getAsk(), t.getBidVolume(), t.getAskVolume());
-                                }
-                            }
-                        }
-                        success = true;
-                        Thread.sleep(50); 
-                    } catch (Exception e) {
-                        retries--;
-                        log("[" + inst + "] Сбой сети (Тики). Осталось попыток: " + retries);
-                        Thread.sleep(2000);
-                        if (retries == 0) {
-                            log("[" + inst + "] Блок пропущен из-за ошибки. Идем дальше...");
-                            break; 
+                List<ITick> ticks = hist.getTicks(inst, cStart, cEnd);
+                if (ticks != null) {
+                    for (ITick t : ticks) {
+                        if (t.getTime() > sessionStartMs) {
+                            writer.writeTick(t.getTime(), t.getBid(), t.getAsk(), t.getBidVolume(), t.getAskVolume());
                         }
                     }
                 }
