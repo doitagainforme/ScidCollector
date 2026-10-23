@@ -245,10 +245,6 @@ public class ScidCollector extends JFrame {
 
             int m1Days = Integer.parseInt(m1DaysField.getText().trim());
             int tDays = Integer.parseInt(tickDaysField.getText().trim());
-            
-            // Вернули стандартный расчет времени без искусственных вычетов
-            long now = System.currentTimeMillis();
-            now = now - (now % 60000);
 
             for (Instrument inst : instruments) {
                 String fileName = fileMap.get(inst);
@@ -260,14 +256,23 @@ public class ScidCollector extends JFrame {
                     writers.put(inst, writer);
                     long lastTime = writer.getLastTimeMs();
 
+                    // ИСПРАВЛЕНИЕ: Берем точное время с сервера Dukascopy, чтобы не запрашивать "будущее"
+                    long serverNow = System.currentTimeMillis() - 60000;
+                    try {
+                        ITick lastServerTick = context.getHistory().getLastTick(inst);
+                        if (lastServerTick != null) {
+                            serverNow = lastServerTick.getTime();
+                        }
+                    } catch (Exception ignored) {}
+
                     if (lastTime == 0) {
                         log("[" + inst + "] Скачивание минутного архива...");
-                        loadBars(context.getHistory(), inst, writer, now - (m1Days * 86400000L), now - (tDays * 86400000L));
+                        loadBars(context.getHistory(), inst, writer, serverNow - (m1Days * 86400000L), serverNow - (tDays * 86400000L));
                         log("[" + inst + "] Скачивание тикового архива...");
-                        loadTicks(context.getHistory(), inst, writer, now - (tDays * 86400000L), now);
-                    } else if (lastTime < now - 5000) {
+                        loadTicks(context.getHistory(), inst, writer, serverNow - (tDays * 86400000L), serverNow);
+                    } else if (lastTime < serverNow - 5000) {
                         log("[" + inst + "] Докачка пропущенных тиков (Backfill)...");
-                        loadTicks(context.getHistory(), inst, writer, lastTime, now);
+                        loadTicks(context.getHistory(), inst, writer, lastTime, serverNow);
                     }
                 } catch (Exception e) {
                     log("Ошибка с " + inst + ": " + e.getMessage());
@@ -288,7 +293,7 @@ public class ScidCollector extends JFrame {
             }
         }
 
-        private void loadBars(IHistory hist, Instrument inst, ScidWriter writer, long from, long to) throws Exception {
+        private void loadBars(IHistory hist, Instrument inst, ScidWriter writer, long from, long to) {
             long step = 30L * 86400000L; 
             from = from - (from % 60000);
             to = to - (to % 60000);
@@ -300,14 +305,16 @@ public class ScidCollector extends JFrame {
                 boolean found = false;
                 while (from < to) {
                     long pEnd = Math.min(from + step, to);
-                    List<IBar> probe = hist.getBars(inst, Period.ONE_MIN, OfferSide.BID, from, pEnd);
-                    if (probe != null && !probe.isEmpty()) {
-                        from = probe.get(0).getTime();
-                        from = from - (from % 60000);
-                        found = true;
-                        log("[" + inst + "] Найдена история M1 начиная с: " + sdf.format(new Date(from)));
-                        break;
-                    }
+                    try {
+                        List<IBar> probe = hist.getBars(inst, Period.ONE_MIN, OfferSide.BID, from, pEnd);
+                        if (probe != null && !probe.isEmpty()) {
+                            from = probe.get(0).getTime();
+                            from = from - (from % 60000);
+                            found = true;
+                            log("[" + inst + "] Найдена история M1 начиная с: " + sdf.format(new Date(from)));
+                            break;
+                        }
+                    } catch (Exception ignored) {}
                     from += step;
                 }
                 if (!found) {
@@ -321,33 +328,41 @@ public class ScidCollector extends JFrame {
                 cEnd = cEnd - (cEnd % 60000);
                 
                 log("[" + inst + "] M1: загрузка " + sdf.format(new Date(cStart)) + " ...");
-                List<IBar> bars = hist.getBars(inst, Period.ONE_MIN, OfferSide.BID, cStart, cEnd);
-                if (bars != null) {
-                    for (IBar b : bars) {
-                        if (b.getVolume() > 0 && b.getTime() > sessionStartMs) {
-                            writer.writeBar(b.getTime(), b.getOpen(), b.getHigh(), b.getLow(), b.getClose(), b.getVolume());
+                try {
+                    List<IBar> bars = hist.getBars(inst, Period.ONE_MIN, OfferSide.BID, cStart, cEnd);
+                    if (bars != null) {
+                        for (IBar b : bars) {
+                            if (b.getVolume() > 0 && b.getTime() > sessionStartMs) {
+                                writer.writeBar(b.getTime(), b.getOpen(), b.getHigh(), b.getLow(), b.getClose(), b.getVolume());
+                            }
                         }
                     }
+                } catch (Exception e) {
+                    log("[" + inst + "] Ошибка блока M1: " + e.getMessage());
                 }
             }
         }
 
-        // ПОЛНОСТЬЮ ОТКАТИЛИ МЕТОД ЗАГРУЗКИ ТИКОВ К ПРОВЕРЕННОЙ СТАБИЛЬНОЙ ВЕРСИИ
-        private void loadTicks(IHistory hist, Instrument inst, ScidWriter writer, long from, long to) throws Exception {
-            long step = 4 * 3600 * 1000L; // Стабильный шаг в 4 часа
+        private void loadTicks(IHistory hist, Instrument inst, ScidWriter writer, long from, long to) {
+            long step = 4 * 3600 * 1000L; 
             long sessionStartMs = writer.getLastTimeMs(); 
             SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm");
 
             for (long cStart = from; cStart < to; cStart += step) {
                 long cEnd = Math.min(cStart + step, to);
                 log("[" + inst + "] ТИКИ: загрузка " + sdf.format(new Date(cStart)) + " ...");
-                List<ITick> ticks = hist.getTicks(inst, cStart, cEnd);
-                if (ticks != null) {
-                    for (ITick t : ticks) {
-                        if (t.getTime() > sessionStartMs) {
-                            writer.writeTick(t.getTime(), t.getBid(), t.getAsk(), t.getBidVolume(), t.getAskVolume());
+                try {
+                    // Изолируем скачивание каждого блока. Если один блок сломается, программа пойдет дальше
+                    List<ITick> ticks = hist.getTicks(inst, cStart, cEnd);
+                    if (ticks != null) {
+                        for (ITick t : ticks) {
+                            if (t.getTime() > sessionStartMs) {
+                                writer.writeTick(t.getTime(), t.getBid(), t.getAsk(), t.getBidVolume(), t.getAskVolume());
+                            }
                         }
                     }
+                } catch (Exception e) {
+                    log("[" + inst + "] Ошибка блока ТИКОВ: " + e.getMessage());
                 }
             }
         }
