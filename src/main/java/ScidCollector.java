@@ -200,9 +200,6 @@ public class ScidCollector extends JFrame {
         }
     }
 
-    // =========================================================================================
-    // СТРАТЕГИЯ СБОРА И ДОКАЧКИ
-    // =========================================================================================
     class ScidStrategy implements IStrategy {
         private final Map<Instrument, ScidWriter> writers = new HashMap<>();
         private boolean realtimeReady = false;
@@ -245,7 +242,7 @@ public class ScidCollector extends JFrame {
 
             int m1Days = Integer.parseInt(m1DaysField.getText().trim());
             int tDays = Integer.parseInt(tickDaysField.getText().trim());
-            
+
             for (Instrument inst : instruments) {
                 String fileName = fileMap.get(inst);
                 String fullPath = saveDirField.getText().trim() + File.separator + fileName;
@@ -274,7 +271,7 @@ public class ScidCollector extends JFrame {
                         loadTicks(context.getHistory(), inst, writer, lastTime, serverNow);
                     }
                 } catch (Exception e) {
-                    log("Ошибка с " + inst + ": " + e.getMessage());
+                    log("Ошибка с " + inst + ". Загрузка прервана: " + e.getMessage());
                 }
             }
             realtimeReady = true;
@@ -322,15 +319,21 @@ public class ScidCollector extends JFrame {
             for (long cStart = from; cStart < to; cStart += step) {
                 long cEnd = Math.min(cStart + step, to);
                 cEnd = cEnd - (cEnd % 60000);
+                
                 log("[" + inst + "] M1: загрузка " + sdf.format(new Date(cStart)) + " ...");
                 try {
                     List<IBar> bars = hist.getBars(inst, Period.ONE_MIN, OfferSide.BID, cStart, cEnd);
-                    if (bars != null) {
+                    if (bars != null && !bars.isEmpty()) {
+                        int count = 0;
                         for (IBar b : bars) {
                             if (b.getVolume() > 0 && b.getTime() > sessionStartMs) {
                                 writer.writeBar(b.getTime(), b.getOpen(), b.getHigh(), b.getLow(), b.getClose(), b.getVolume());
+                                count++;
                             }
                         }
+                        log("[" + inst + "]   -> Сохранено свечей: " + count);
+                    } else {
+                        log("[" + inst + "]   -> Сервер вернул 0 свечей (пусто)");
                     }
                 } catch (Exception e) {
                     log("[" + inst + "] Пропуск блока M1 (ошибка: " + e.getMessage() + ")");
@@ -338,13 +341,11 @@ public class ScidCollector extends JFrame {
             }
         }
 
-        // НОВЫЙ ИНТЕЛЛЕКТУАЛЬНЫЙ МЕТОД ДОКАЧКИ ТИКОВ БЕЗ ПРОПУСКОВ
         private void loadTicks(IHistory hist, Instrument inst, ScidWriter writer, long from, long to) throws Exception {
-            // Защита от границы Live-эфира: отступаем 2 минуты от самого последнего серверного тика
             long safeTo = to - 120000;
             if (from >= safeTo) return;
 
-            long step = 1800000L; // Стартуем с 30 минут (оптимально для EURUSD)
+            long step = 1800000L; 
             long sessionStartMs = writer.getLastTimeMs(); 
             SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
 
@@ -355,14 +356,19 @@ public class ScidCollector extends JFrame {
 
                 try {
                     List<ITick> ticks = hist.getTicks(inst, cStart, cEnd);
-                    if (ticks != null) {
+                    if (ticks != null && !ticks.isEmpty()) {
+                        int count = 0;
                         for (ITick t : ticks) {
                             if (t.getTime() > sessionStartMs) {
                                 writer.writeTick(t.getTime(), t.getBid(), t.getAsk(), t.getBidVolume(), t.getAskVolume());
+                                count++;
                             }
                         }
+                        log("[" + inst + "]   -> Сохранено тиков: " + count);
+                    } else {
+                        log("[" + inst + "]   -> Сервер вернул 0 тиков (пусто)");
                     }
-                    // Успех - двигаемся вперед и возвращаем нормальный размер шага
+                    
                     cStart = cEnd;
                     step = 1800000L; 
                     Thread.sleep(50); 
@@ -370,16 +376,14 @@ public class ScidCollector extends JFrame {
                     String err = e.getMessage() != null ? e.getMessage() : "Timeout";
                     log("[" + inst + "] Ошибка API: " + err);
 
-                    // Если сервер захлебнулся, режем размер запроса ровно пополам
                     step = step / 2; 
                     if (step >= 60000) {
                         log("[" + inst + "] Уменьшаем блок до " + (step / 60000) + " мин. Пробуем снова...");
                         Thread.sleep(2000);
                     } else {
-                        // Режим отчаяния: если не отдается даже 1 минута, только тогда мы её пропускаем
-                        log("[" + inst + "] Критический отказ. Вынужденный пропуск 1 минуты.");
-                        cStart += 60000; // Пропускаем ровно 1 проблемную минуту, а не 4 часа
-                        step = 1800000L; // Возвращаем нормальный шаг
+                        log("[" + inst + "] Критический отказ сервера. Пропуск 1 минуты.");
+                        cStart += 60000; 
+                        step = 1800000L; 
                     }
                 }
             }
@@ -391,9 +395,6 @@ public class ScidCollector extends JFrame {
         @Override public void onAccount(IAccount account) {}
     }
 
-    // =========================================================================================
-    // БИНАРНАЯ ЗАПИСЬ .SCID 
-    // =========================================================================================
     class ScidWriter {
         private final FileChannel channel;
         private final RandomAccessFile raf;
