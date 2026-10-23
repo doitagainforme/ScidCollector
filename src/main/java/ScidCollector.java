@@ -287,13 +287,12 @@ public class ScidCollector extends JFrame {
         }
 
         private void loadBars(IHistory hist, Instrument inst, ScidWriter writer, long from, long to) throws Exception {
-            long step = 30L * 86400000L; // Шаг 30 дней для быстрого скачивания минут
+            long step = 30L * 86400000L; 
             from = from - (from % 60000);
             to = to - (to % 60000);
             long sessionStartMs = writer.getLastTimeMs(); 
             SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd");
 
-            // Быстрый поиск начала базы, чтобы не ждать часы на пустых годах
             if (sessionStartMs == 0) {
                 log("[" + inst + "] Поиск фактического начала минутного архива (пропуск пустых лет)...");
                 boolean found = false;
@@ -320,21 +319,37 @@ public class ScidCollector extends JFrame {
                 cEnd = cEnd - (cEnd % 60000);
                 
                 log("[" + inst + "] M1: загрузка " + sdf.format(new Date(cStart)) + " ...");
-                List<IBar> bars = hist.getBars(inst, Period.ONE_MIN, OfferSide.BID, cStart, cEnd);
-                if (bars != null) {
-                    for (IBar b : bars) {
-                        if (b.getTime() > sessionStartMs) {
-                            writer.writeBar(b.getTime(), b.getOpen(), b.getHigh(), b.getLow(), b.getClose(), b.getVolume());
+                
+                boolean success = false;
+                int retries = 3;
+                while (!success && retries > 0) {
+                    try {
+                        List<IBar> bars = hist.getBars(inst, Period.ONE_MIN, OfferSide.BID, cStart, cEnd);
+                        if (bars != null) {
+                            for (IBar b : bars) {
+                                // ИСКЛЮЧАЕМ ВЫХОДНЫЕ ДНИ: записываем только бары с реальным объемом > 0
+                                if (b.getVolume() > 0 && b.getTime() > sessionStartMs) {
+                                    writer.writeBar(b.getTime(), b.getOpen(), b.getHigh(), b.getLow(), b.getClose(), b.getVolume());
+                                }
+                            }
                         }
+                        success = true;
+                        Thread.sleep(50); // Пауза для защиты от бана сервера
+                    } catch (Exception e) {
+                        retries--;
+                        log("[" + inst + "] Сбой сети (M1). Осталось попыток: " + retries);
+                        Thread.sleep(2000);
+                        if (retries == 0) throw e;
                     }
                 }
             }
         }
 
         private void loadTicks(IHistory hist, Instrument inst, ScidWriter writer, long from, long to) throws Exception {
-            long step = 43200000L; // Шаг 12 часов для безопасного скачивания тяжелых тиков
+            // ШАГ УМЕНЬШЕН ДО 4 ЧАСОВ во избежание ошибки сервера на ликвидных парах
+            long step = 4 * 3600 * 1000L; 
             long sessionStartMs = writer.getLastTimeMs(); 
-            SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd");
+            SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm");
 
             if (sessionStartMs == 0) {
                 log("[" + inst + "] Поиск фактического начала тикового архива...");
@@ -362,12 +377,26 @@ public class ScidCollector extends JFrame {
                 long cEnd = Math.min(cStart + step, to);
                 
                 log("[" + inst + "] ТИКИ: загрузка " + sdf.format(new Date(cStart)) + " ...");
-                List<ITick> ticks = hist.getTicks(inst, cStart, cEnd);
-                if (ticks != null) {
-                    for (ITick t : ticks) {
-                        if (t.getTime() > sessionStartMs) {
-                            writer.writeTick(t.getTime(), t.getBid(), t.getAsk(), t.getBidVolume(), t.getAskVolume());
+                
+                boolean success = false;
+                int retries = 3;
+                while (!success && retries > 0) {
+                    try {
+                        List<ITick> ticks = hist.getTicks(inst, cStart, cEnd);
+                        if (ticks != null) {
+                            for (ITick t : ticks) {
+                                if (t.getTime() > sessionStartMs) {
+                                    writer.writeTick(t.getTime(), t.getBid(), t.getAsk(), t.getBidVolume(), t.getAskVolume());
+                                }
+                            }
                         }
+                        success = true;
+                        Thread.sleep(50); // Пауза для защиты от бана сервера
+                    } catch (Exception e) {
+                        retries--;
+                        log("[" + inst + "] Сбой сети (Тики). Осталось попыток: " + retries);
+                        Thread.sleep(2000);
+                        if (retries == 0) throw e;
                     }
                 }
             }
