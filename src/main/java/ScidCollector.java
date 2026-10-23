@@ -13,6 +13,7 @@ import java.util.List;
 
 public class ScidCollector extends JFrame {
 
+    private JComboBox<String> accountTypeCombo;
     private JTextField userField, passField, symbolsField, m1DaysField, tickDaysField, saveDirField;
     private JTextArea logArea;
     private JButton startButton;
@@ -27,44 +28,57 @@ public class ScidCollector extends JFrame {
 
     public ScidCollector() {
         setTitle("Dukascopy SCID Collector (Sierra Chart)");
-        setSize(600, 500);
+        setSize(650, 550);
         setDefaultCloseOperation(EXIT_ON_CLOSE);
         setLocationRelativeTo(null);
         setLayout(new BorderLayout());
 
         loadConfig();
 
-        JPanel panel = new JPanel(new GridLayout(6, 2, 5, 5));
+        // Увеличили сетку до 7 строк для нового переключателя серверов
+        JPanel panel = new JPanel(new GridLayout(7, 2, 5, 5));
         panel.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
 
-        panel.add(new JLabel("Логин (DEMO):"));
+        panel.add(new JLabel("Тип счета:"));
+        accountTypeCombo = new JComboBox<>(new String[]{"DEMO", "LIVE"});
+        accountTypeCombo.setSelectedItem(props.getProperty("account_type", "DEMO"));
+        panel.add(accountTypeCombo);
+
+        panel.add(new JLabel("Логин:"));
         userField = new JTextField(props.getProperty("username", ""));
+        addContextMenu(userField);
         panel.add(userField);
 
         panel.add(new JLabel("Пароль:"));
-        passField = new JTextField(props.getProperty("password", ""));
+        passField = new JPasswordField(props.getProperty("password", ""));
+        addContextMenu(passField);
         panel.add(passField);
 
-        panel.add(new JLabel("Инструменты (через запятую):"));
-        symbolsField = new JTextField(props.getProperty("symbols", "USATECHIDXUSD, EURUSD"));
+        panel.add(new JLabel("Инструменты (Тикер=Файл):"));
+        symbolsField = new JTextField(props.getProperty("symbols", "USATECHIDXUSD=NAS100, EURUSD=EURUSD"));
+        addContextMenu(symbolsField);
         panel.add(symbolsField);
 
         panel.add(new JLabel("Глубина истории минут (дней):"));
         m1DaysField = new JTextField(props.getProperty("m1days", "9999"));
+        addContextMenu(m1DaysField);
         panel.add(m1DaysField);
 
         panel.add(new JLabel("Глубина истории тиков (дней):"));
         tickDaysField = new JTextField(props.getProperty("tickdays", "55"));
+        addContextMenu(tickDaysField);
         panel.add(tickDaysField);
 
         panel.add(new JLabel("Папка сохранения:"));
         saveDirField = new JTextField(props.getProperty("savedir", "C:\\SierraChart\\Data"));
+        addContextMenu(saveDirField);
         panel.add(saveDirField);
 
         add(panel, BorderLayout.NORTH);
 
         logArea = new JTextArea();
         logArea.setEditable(false);
+        addContextMenu(logArea); // Для копирования логов
         add(new JScrollPane(logArea), BorderLayout.CENTER);
 
         startButton = new JButton("СТАРТ");
@@ -72,6 +86,28 @@ public class ScidCollector extends JFrame {
         startButton.setBackground(new Color(46, 204, 113));
         startButton.addActionListener(e -> toggleStart());
         add(startButton, BorderLayout.SOUTH);
+    }
+
+    // Метод добавления меню правой кнопки мыши (Копировать/Вставить)
+    private void addContextMenu(JTextComponent textComponent) {
+        JPopupMenu popup = new JPopupMenu();
+        JMenuItem copy = new JMenuItem("Копировать");
+        JMenuItem paste = new JMenuItem("Вставить");
+        JMenuItem cut = new JMenuItem("Вырезать");
+        JMenuItem selectAll = new JMenuItem("Выделить всё");
+
+        copy.addActionListener(e -> textComponent.copy());
+        paste.addActionListener(e -> textComponent.paste());
+        cut.addActionListener(e -> textComponent.cut());
+        selectAll.addActionListener(e -> textComponent.selectAll());
+
+        popup.add(copy);
+        popup.add(paste);
+        popup.add(cut);
+        popup.addSeparator();
+        popup.add(selectAll);
+
+        textComponent.setComponentPopupMenu(popup);
     }
 
     private void log(String msg) {
@@ -83,6 +119,7 @@ public class ScidCollector extends JFrame {
 
     private void saveConfig() {
         try {
+            props.setProperty("account_type", (String) accountTypeCombo.getSelectedItem());
             props.setProperty("username", userField.getText().trim());
             props.setProperty("password", passField.getText().trim());
             props.setProperty("symbols", symbolsField.getText().trim());
@@ -105,6 +142,7 @@ public class ScidCollector extends JFrame {
             saveConfig();
             startButton.setText("РАБОТАЕТ (Закройте окно для остановки)");
             startButton.setEnabled(false);
+            accountTypeCombo.setEnabled(false);
             userField.setEnabled(false);
             passField.setEnabled(false);
             isRunning = true;
@@ -127,9 +165,15 @@ public class ScidCollector extends JFrame {
                 }
             });
 
-            log("Подключение к демо-серверам...");
+            log("Подключение к серверам " + accountTypeCombo.getSelectedItem() + "...");
             System.setProperty("http.agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36");
-            client.connect("http://platform.dukascopy.com/demo_3/jforex_3.jnlp", userField.getText(), passField.getText());
+            
+            // Выбор адреса сервера в зависимости от типа счета
+            String jnlpUrl = accountTypeCombo.getSelectedItem().equals("LIVE") 
+                ? "http://platform.dukascopy.com/live_3/jforex_3.jnlp" 
+                : "http://platform.dukascopy.com/demo_3/jforex_3.jnlp";
+
+            client.connect(jnlpUrl, userField.getText(), passField.getText());
 
             int attempts = 30;
             while (!client.isConnected() && attempts > 0) {
@@ -143,6 +187,9 @@ public class ScidCollector extends JFrame {
                 SwingUtilities.invokeLater(() -> {
                     startButton.setText("СТАРТ");
                     startButton.setEnabled(true);
+                    accountTypeCombo.setEnabled(true);
+                    userField.setEnabled(true);
+                    passField.setEnabled(true);
                 });
                 return;
             }
@@ -163,19 +210,37 @@ public class ScidCollector extends JFrame {
 
         @Override
         public void onStart(IContext context) throws JFException {
-            String[] symbolNames = symbolsField.getText().split(",");
+            String[] symbolPairs = symbolsField.getText().split(",");
             Set<Instrument> instruments = new HashSet<>();
             Map<Instrument, String> fileMap = new HashMap<>();
 
-            for (String s : symbolNames) {
-                s = s.trim().toUpperCase();
+            for (String pair : symbolPairs) {
+                pair = pair.trim();
+                if (pair.isEmpty()) continue;
+                
+                String instName;
+                String fileName;
+
+                // Парсинг формата ИНСТРУМЕНТ=ФАЙЛ (например, USATECHIDXUSD=NAS100)
+                if (pair.contains("=")) {
+                    String[] parts = pair.split("=");
+                    instName = parts[0].trim().toUpperCase();
+                    fileName = parts[1].trim();
+                } else {
+                    instName = pair.toUpperCase();
+                    fileName = instName.replace("/", "");
+                }
+
+                if (!fileName.toLowerCase().endsWith(".scid")) {
+                    fileName += ".scid";
+                }
+
                 try {
-                    Instrument inst = Instrument.valueOf(s);
+                    Instrument inst = Instrument.valueOf(instName);
                     instruments.add(inst);
-                    String fileName = s.equals("USATECHIDXUSD") ? "NAS100.scid" : (s.replace("/", "") + ".scid");
                     fileMap.put(inst, fileName);
                 } catch (Exception e) {
-                    log("Инструмент не найден: " + s);
+                    log("ОШИБКА: Инструмент '" + instName + "' не распознан API Dukascopy.");
                 }
             }
             context.setSubscribedInstruments(instruments);
@@ -218,7 +283,6 @@ public class ScidCollector extends JFrame {
             ScidWriter w = writers.get(instrument);
             if (w != null) {
                 try { 
-                    // Передаем точные объемы Bid и Ask из API Dukascopy
                     w.writeTick(tick.getTime(), tick.getBid(), tick.getAsk(), tick.getBidVolume(), tick.getAskVolume()); 
                 } catch (Exception ignored) {}
             }
@@ -237,7 +301,6 @@ public class ScidCollector extends JFrame {
                 if (bars != null) {
                     for (IBar b : bars) {
                         if (b.getTime() > sessionStartMs) {
-                            // Передаем объем свечи (он тоже в миллионах)
                             writer.writeBar(b.getTime(), b.getOpen(), b.getHigh(), b.getLow(), b.getClose(), b.getVolume());
                         }
                     }
@@ -255,7 +318,6 @@ public class ScidCollector extends JFrame {
                 if (ticks != null) {
                     for (ITick t : ticks) {
                         if (t.getTime() > sessionStartMs) {
-                            // Передаем точные объемы Bid и Ask из исторического тика
                             writer.writeTick(t.getTime(), t.getBid(), t.getAsk(), t.getBidVolume(), t.getAskVolume());
                         }
                     }
@@ -320,7 +382,6 @@ public class ScidCollector extends JFrame {
             this.lastExcelDate = excelDate;
             this.lastTimeMs = timeMs;
 
-            // Переводим объем бара в единицы (умножаем на 1 миллион)
             int vol = (int)(dukasVolume * 1000000.0);
             if (vol <= 0) vol = 1;
 
@@ -335,12 +396,9 @@ public class ScidCollector extends JFrame {
             double mid = (bid + ask) * 0.5;
             double closePrice = mid >= lastMid ? ask : bid;
             
-            // Переводим ликвидность из миллионов в штуки
             int rawBidVol = (int)(dukasBidVol * 1000000.0);
             int rawAskVol = (int)(dukasAskVol * 1000000.0);
 
-            // Правило тика (Tick Rule) для кластеров (Footprint)
-            // Пишем объем той стороны, в которую двинулась цена
             int askVol = 0;
             int bidVol = 0;
             if (mid >= lastMid) {
@@ -351,7 +409,6 @@ public class ScidCollector extends JFrame {
             lastMid = mid;
 
             int totalVol = askVol + bidVol;
-
             double excelDate = (timeMs + 2209161600000.0) / 86400000.0;
             
             if (excelDate <= this.lastExcelDate) {
