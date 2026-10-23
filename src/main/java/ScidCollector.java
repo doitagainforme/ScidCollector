@@ -3,6 +3,7 @@ import com.dukascopy.api.system.ClientFactory;
 import com.dukascopy.api.system.IClient;
 import com.dukascopy.api.system.ISystemListener;
 import javax.swing.*;
+import javax.swing.text.JTextComponent;
 import java.awt.*;
 import java.io.*;
 import java.nio.ByteBuffer;
@@ -35,7 +36,6 @@ public class ScidCollector extends JFrame {
 
         loadConfig();
 
-        // Увеличили сетку до 7 строк для нового переключателя серверов
         JPanel panel = new JPanel(new GridLayout(7, 2, 5, 5));
         panel.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
 
@@ -78,7 +78,7 @@ public class ScidCollector extends JFrame {
 
         logArea = new JTextArea();
         logArea.setEditable(false);
-        addContextMenu(logArea); // Для копирования логов
+        addContextMenu(logArea); 
         add(new JScrollPane(logArea), BorderLayout.CENTER);
 
         startButton = new JButton("СТАРТ");
@@ -88,7 +88,6 @@ public class ScidCollector extends JFrame {
         add(startButton, BorderLayout.SOUTH);
     }
 
-    // Метод добавления меню правой кнопки мыши (Копировать/Вставить)
     private void addContextMenu(JTextComponent textComponent) {
         JPopupMenu popup = new JPopupMenu();
         JMenuItem copy = new JMenuItem("Копировать");
@@ -168,7 +167,6 @@ public class ScidCollector extends JFrame {
             log("Подключение к серверам " + accountTypeCombo.getSelectedItem() + "...");
             System.setProperty("http.agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36");
             
-            // Выбор адреса сервера в зависимости от типа счета
             String jnlpUrl = accountTypeCombo.getSelectedItem().equals("LIVE") 
                 ? "http://platform.dukascopy.com/live_3/jforex_3.jnlp" 
                 : "http://platform.dukascopy.com/demo_3/jforex_3.jnlp";
@@ -221,7 +219,6 @@ public class ScidCollector extends JFrame {
                 String instName;
                 String fileName;
 
-                // Парсинг формата ИНСТРУМЕНТ=ФАЙЛ (например, USATECHIDXUSD=NAS100)
                 if (pair.contains("=")) {
                     String[] parts = pair.split("=");
                     instName = parts[0].trim().toUpperCase();
