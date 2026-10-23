@@ -169,8 +169,8 @@ public class ScidCollector extends JFrame {
             System.setProperty("http.agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36");
             
             String jnlpUrl = accountTypeCombo.getSelectedItem().equals("LIVE") 
-                ? "https://platform.dukascopy.com/live_3/jforex_3.jnlp" 
-                : "https://platform.dukascopy.com/demo_3/jforex_3.jnlp";
+                ? "https://platform.dukascopy.com/live_client/live.jnlp" 
+                : "https://platform.dukascopy.com/demo_client/demo.jnlp";
 
             client.connect(jnlpUrl, userField.getText(), passField.getText());
 
