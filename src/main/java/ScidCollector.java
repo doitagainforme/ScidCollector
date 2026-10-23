@@ -9,6 +9,7 @@ import java.io.*;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.channels.FileChannel;
+import java.text.SimpleDateFormat;
 import java.util.*;
 import java.util.List;
 
@@ -286,14 +287,25 @@ public class ScidCollector extends JFrame {
         }
 
         private void loadBars(IHistory hist, Instrument inst, ScidWriter writer, long from, long to) throws Exception {
-            long step = 86400000L;
+            // Проверка фактического начала истории инструмента на сервере
+            long earliestM1 = hist.getStartTimeOfData(inst, Period.ONE_MIN, OfferSide.BID);
+            if (from < earliestM1) {
+                from = earliestM1;
+                log("[" + inst + "] Начало базы M1 на сервере: " + new SimpleDateFormat("yyyy-MM-dd").format(new Date(earliestM1)));
+            }
+            if (from >= to) return;
+
+            long step = 30L * 86400000L; // Шаг 30 дней за один запрос (ускорение в 30 раз)
             from = from - (from % 60000);
             to = to - (to % 60000);
             long sessionStartMs = writer.getLastTimeMs(); 
+            SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd");
 
             for (long cStart = from; cStart < to; cStart += step) {
                 long cEnd = Math.min(cStart + step, to);
                 cEnd = cEnd - (cEnd % 60000);
+                
+                log("[" + inst + "] Загрузка M1: " + sdf.format(new Date(cStart)) + " ...");
                 List<IBar> bars = hist.getBars(inst, Period.ONE_MIN, OfferSide.BID, cStart, cEnd);
                 if (bars != null) {
                     for (IBar b : bars) {
@@ -306,11 +318,22 @@ public class ScidCollector extends JFrame {
         }
 
         private void loadTicks(IHistory hist, Instrument inst, ScidWriter writer, long from, long to) throws Exception {
-            long step = 4 * 3600 * 1000L;
+            // Проверка фактического начала истории тиков на сервере
+            long earliestTick = hist.getStartTimeOfData(inst, Period.TICK, OfferSide.BID);
+            if (from < earliestTick) {
+                from = earliestTick;
+                log("[" + inst + "] Начало тиковой базы на сервере: " + new SimpleDateFormat("yyyy-MM-dd").format(new Date(earliestTick)));
+            }
+            if (from >= to) return;
+
+            long step = 86400000L; // Шаг 1 день за один запрос (ускорение в 6 раз)
             long sessionStartMs = writer.getLastTimeMs(); 
+            SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd");
 
             for (long cStart = from; cStart < to; cStart += step) {
                 long cEnd = Math.min(cStart + step, to);
+                
+                log("[" + inst + "] Загрузка ТИКОВ: " + sdf.format(new Date(cStart)) + " ...");
                 List<ITick> ticks = hist.getTicks(inst, cStart, cEnd);
                 if (ticks != null) {
                     for (ITick t : ticks) {
